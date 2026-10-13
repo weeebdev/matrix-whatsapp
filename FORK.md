@@ -20,7 +20,9 @@ New bot commands (send them to the bridge bot):
   so it works for voice messages from others received after this was enabled.
 - **TikTok links:** a TikTok link in any received message (or one you send from your phone) is
   downloaded with yt-dlp (bundled in the image) and posted as a video reply. Up to 3 links per
-  message, 100 MB max. Failures leave the link as is.
+  message. The bridge picks H.264 with audio under 100 MB; otherwise it takes the best version
+  that fits and converts it to H.264 with ffmpeg at a bitrate targeting the limit. If nothing fits,
+  it replies "🎬 TikTok video too large to bridge (N MB)". Other failures leave the link as is.
 
 Stored content: keep-deleted and show-edits need other people's message content kept in the bridge
 database (Beeper-style `ratchet_on_decrypt` configs make old Matrix events undecryptable, so it

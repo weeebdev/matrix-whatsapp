@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -151,6 +152,10 @@ func (wa *WhatsAppClient) forkTranscribe(ctx context.Context, portal *bridgev2.P
 
 // forkPostNotice posts a bridge-bot notice replying to target.
 func (wa *WhatsAppClient) forkPostNotice(portalKey networkid.PortalKey, target *database.Message, id, text string) {
+	wa.forkPostNoticeTo(portalKey, &networkid.MessageOptionalPartID{MessageID: target.ID, PartID: &target.PartID}, id, text)
+}
+
+func (wa *WhatsAppClient) forkPostNoticeTo(portalKey networkid.PortalKey, replyTo *networkid.MessageOptionalPartID, id, text string) {
 	wa.UserLogin.QueueRemoteEvent(&simplevent.Message[string]{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessage,
@@ -161,7 +166,7 @@ func (wa *WhatsAppClient) forkPostNotice(portalKey networkid.PortalKey, target *
 		ID:   networkid.MessageID(id),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, text string) (*bridgev2.ConvertedMessage, error) {
 			return &bridgev2.ConvertedMessage{
-				ReplyTo: &networkid.MessageOptionalPartID{MessageID: target.ID, PartID: &target.PartID},
+				ReplyTo: replyTo,
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					Type:    event.EventMessage,
 					Content: &event.MessageEventContent{MsgType: event.MsgNotice, Body: text},
@@ -208,39 +213,21 @@ func (wa *WhatsAppClient) forkHandleLinks(evt *events.Message, msg *waE2E.Messag
 
 func (wa *WhatsAppClient) forkDownloadTikTok(info *MessageInfoWrapper, index int, link string) {
 	log := wa.UserLogin.Log.With().Str("action", "fork tiktok").Str("message_id", info.Info.ID).Logger()
-	ctx, cancel := context.WithTimeout(log.WithContext(context.Background()), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(log.WithContext(context.Background()), 15*time.Minute)
 	defer cancel()
-	dir, err := os.MkdirTemp("", "tiktok-")
-	if err != nil {
-		log.Err(err).Msg("Failed to create temp dir")
+	targetID := info.GetID()
+	data, tooLarge, err := forkFetchTikTok(ctx, link)
+	if tooLarge > 0 {
+		log.Info().Int64("bytes", tooLarge).Msg("TikTok video too large to bridge")
+		wa.forkPostNoticeTo(info.GetPortalKey(), &networkid.MessageOptionalPartID{MessageID: targetID},
+			fmt.Sprintf("fork-tiktok-%s-%d", targetID, index),
+			fmt.Sprintf("🎬 TikTok video too large to bridge (%d MB)", (tooLarge+(1<<20)-1)>>20))
 		return
-	}
-	defer os.RemoveAll(dir)
-	cmd := exec.CommandContext(ctx, "yt-dlp",
-		"--no-playlist", "--no-progress", "--quiet", "--no-warnings",
-		"--max-filesize", "100M",
-		"-f", "b[ext=mp4][vcodec^=h264]/b[ext=mp4]/b",
-		"-o", filepath.Join(dir, "%(id)s.%(ext)s"),
-		"--print", "after_move:filepath",
-		link)
-	out, err := cmd.Output()
-	if err != nil {
+	} else if err != nil {
 		log.Warn().Err(err).Msg("TikTok download failed")
 		return
 	}
-	path := strings.TrimSpace(string(out))
-	stat, err := os.Stat(path)
-	if err != nil || stat.Size() == 0 || stat.Size() > forkTikTokMaxBytes {
-		log.Warn().Err(err).Msg("TikTok download missing or too large")
-		return
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Err(err).Msg("Failed to read downloaded video")
-		return
-	}
 	log.Info().Int("bytes", len(data)).Msg("Downloaded TikTok video")
-	targetID := info.GetID()
 	wa.UserLogin.QueueRemoteEvent(&simplevent.Message[[]byte]{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessage,
@@ -268,4 +255,183 @@ func (wa *WhatsAppClient) forkDownloadTikTok(info *MessageInfoWrapper, index int
 			}, nil
 		},
 	})
+}
+
+type ytFormat struct {
+	ID             string  `json:"format_id"`
+	VCodec         string  `json:"vcodec"`
+	ACodec         string  `json:"acodec"`
+	Height         int     `json:"height"`
+	FileSize       int64   `json:"filesize"`
+	FileSizeApprox float64 `json:"filesize_approx"`
+}
+
+func (f *ytFormat) size() int64 {
+	if f.FileSize > 0 {
+		return f.FileSize
+	}
+	return int64(f.FileSizeApprox)
+}
+
+func (f *ytFormat) hasVideo() bool { return f.VCodec != "" && f.VCodec != "none" }
+func (f *ytFormat) hasAudio() bool { return f.ACodec != "" && f.ACodec != "none" }
+func (f *ytFormat) isH264() bool {
+	return strings.HasPrefix(f.VCodec, "h264") || strings.HasPrefix(f.VCodec, "avc")
+}
+
+// tiktokPlan is how to get a video under the size limit: a yt-dlp format selector and whether
+// the result needs converting to H.264. tooLarge > 0 means nothing fits (smallest known size).
+type tiktokPlan struct {
+	selector  string
+	transcode bool
+	tooLarge  int64
+}
+
+// planTikTokDownload picks, in order: H.264 with audio under the limit (largest), else the
+// largest video under the limit with any codec (merged with an audio-only format if needed) to be
+// converted to H.264, else reports the smallest size as too large.
+func planTikTokDownload(formats []ytFormat, limit int64) tiktokPlan {
+	var bestH264, bestAny *ytFormat
+	var audio *ytFormat
+	var smallest int64
+	for i := range formats {
+		f := &formats[i]
+		if !f.hasVideo() && f.hasAudio() && (audio == nil || f.size() < audio.size()) {
+			audio = f
+		}
+		if !f.hasVideo() || f.size() <= 0 || f.Height > 1920 {
+			continue
+		}
+		if smallest == 0 || f.size() < smallest {
+			smallest = f.size()
+		}
+		if f.size() > limit {
+			continue
+		}
+		if f.isH264() && f.hasAudio() && (bestH264 == nil || f.Height > bestH264.Height) {
+			bestH264 = f
+		}
+		if (f.hasAudio() || audio != nil) && (bestAny == nil || f.Height > bestAny.Height || (f.Height == bestAny.Height && f.hasAudio() && !bestAny.hasAudio())) {
+			bestAny = f
+		}
+	}
+	switch {
+	case bestH264 != nil:
+		return tiktokPlan{selector: bestH264.ID}
+	case bestAny != nil && bestAny.hasAudio():
+		return tiktokPlan{selector: bestAny.ID, transcode: !bestAny.isH264()}
+	case bestAny != nil && audio != nil:
+		return tiktokPlan{selector: bestAny.ID + "+" + audio.ID, transcode: !bestAny.isH264()}
+	case smallest > 0:
+		return tiktokPlan{tooLarge: smallest}
+	}
+	return tiktokPlan{}
+}
+
+// forkFetchTikTok returns the video bytes, or tooLarge > 0 if no version fits the size limit.
+func forkFetchTikTok(ctx context.Context, link string) (data []byte, tooLarge int64, err error) {
+	probe, err := exec.CommandContext(ctx, "yt-dlp", "--no-playlist", "--no-warnings", "-J", link).Output()
+	if err != nil {
+		return nil, 0, fmt.Errorf("yt-dlp probe failed: %w%s", err, stderrTail(err))
+	}
+	var meta struct {
+		Formats  []ytFormat `json:"formats"`
+		Duration float64    `json:"duration"`
+	}
+	if err = json.Unmarshal(probe, &meta); err != nil {
+		return nil, 0, fmt.Errorf("invalid yt-dlp metadata: %w", err)
+	}
+	plan := planTikTokDownload(meta.Formats, forkTikTokMaxBytes)
+	if plan.tooLarge > 0 {
+		return nil, plan.tooLarge, nil
+	} else if plan.selector == "" {
+		return nil, 0, fmt.Errorf("no downloadable video format")
+	}
+	dir, err := os.MkdirTemp("", "tiktok-")
+	if err != nil {
+		return nil, 0, err
+	}
+	defer os.RemoveAll(dir)
+	dl := exec.CommandContext(ctx, "yt-dlp", "--no-playlist", "--no-progress", "--no-warnings",
+		"-f", plan.selector, "--merge-output-format", "mp4",
+		"-o", filepath.Join(dir, "video.%(ext)s"), link)
+	if out, err := dl.CombinedOutput(); err != nil {
+		return nil, 0, fmt.Errorf("yt-dlp download failed: %w: %s", err, lastLines(out, 5))
+	}
+	path, err := onlyFile(dir)
+	if err != nil {
+		return nil, 0, err
+	}
+	if plan.transcode {
+		// Aim the bitrate at the size limit so long videos still fit.
+		videoKbps := tiktokTargetVideoKbps(meta.Duration)
+		if videoKbps == 0 {
+			stat, _ := os.Stat(path)
+			return nil, max(stat.Size(), int64(forkTikTokMaxBytes)+1), nil
+		}
+		converted := filepath.Join(dir, "h264.mp4")
+		ff := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", path,
+			"-vf", "scale='min(1280,iw)':-2", "-c:v", "libx264", "-preset", "veryfast",
+			"-b:v", fmt.Sprintf("%dk", videoKbps), "-maxrate", fmt.Sprintf("%dk", videoKbps*3/2), "-bufsize", fmt.Sprintf("%dk", videoKbps*2),
+			"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", converted)
+		if out, err := ff.CombinedOutput(); err != nil {
+			return nil, 0, fmt.Errorf("ffmpeg conversion failed: %w: %s", err, lastLines(out, 5))
+		}
+		path = converted
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	} else if stat.Size() > forkTikTokMaxBytes {
+		return nil, stat.Size(), nil
+	}
+	data, err = os.ReadFile(path)
+	return data, 0, err
+}
+
+// tiktokTargetVideoKbps returns a video bitrate that keeps the converted file under about 90% of
+// the size limit with 128 kbps audio, capped at 2500 kbps. 0 means it can't fit at a watchable
+// quality (under 300 kbps) or the duration is unknown.
+func tiktokTargetVideoKbps(durationSec float64) int {
+	if durationSec <= 0 {
+		return 0
+	}
+	totalKbps := float64(forkTikTokMaxBytes) * 0.9 * 8 / 1000 / durationSec
+	videoKbps := int(totalKbps) - 128
+	if videoKbps > 2500 {
+		videoKbps = 2500
+	}
+	if videoKbps < 300 {
+		return 0
+	}
+	return videoKbps
+}
+
+func onlyFile(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if !e.IsDir() && !strings.HasSuffix(e.Name(), ".part") {
+			return filepath.Join(dir, e.Name()), nil
+		}
+	}
+	return "", fmt.Errorf("yt-dlp produced no file")
+}
+
+func lastLines(out []byte, n int) string {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
+}
+
+func stderrTail(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return ": " + lastLines(exitErr.Stderr, 3)
+	}
+	return ""
 }
