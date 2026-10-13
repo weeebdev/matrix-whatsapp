@@ -12,6 +12,9 @@ New bot commands (send them to the bridge bot):
   Beeper-style configs (`ratchet_on_decrypt`) make old Matrix events undecryptable. Messages bridged
   before that field existed get a "🗑 This message was deleted" reply instead.
 
+- `show-edits on|off` (default on): edited messages list their previous versions underneath
+  ("✏️ was: …", newest first, up to 10). Beeper otherwise only shows the latest version.
+
 The code lives in `pkg/connector/privacy.go`, plus a few one-line hooks in `events.go`,
 `handlematrix.go`, `connector.go`, `waid/dbmeta.go` and `msgconv/from-whatsapp.go`.
 

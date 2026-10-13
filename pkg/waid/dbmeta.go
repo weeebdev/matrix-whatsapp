@@ -50,6 +50,11 @@ type UserLoginMetadata struct {
 	// Fork settings, see connector/privacy.go
 	Invisible   bool  `json:"invisible,omitempty"`
 	KeepDeleted *bool `json:"keep_deleted,omitempty"`
+	ShowEdits   *bool `json:"show_edits,omitempty"`
+}
+
+func (m *UserLoginMetadata) ShowEditsEnabled() bool {
+	return m.ShowEdits == nil || *m.ShowEdits
 }
 
 func (m *UserLoginMetadata) KeepDeletedEnabled() bool {
@@ -111,6 +116,8 @@ type MessageMetadata struct {
 	// can't do).
 	ForkContent *event.MessageEventContent `json:"fork_content,omitempty"`
 	ForkDeleted bool                       `json:"fork_deleted,omitempty"`
+	// Previous plain-text versions, newest first.
+	ForkEditHistory []string `json:"fork_edit_history,omitempty"`
 }
 
 func (mm *MessageMetadata) CopyFrom(other any) {
@@ -132,6 +139,9 @@ func (mm *MessageMetadata) CopyFrom(other any) {
 	mm.IsMatrixPoll = mm.IsMatrixPoll || otherMM.IsMatrixPoll
 	if otherMM.ForkContent != nil {
 		mm.ForkContent = otherMM.ForkContent
+	}
+	if otherMM.ForkEditHistory != nil {
+		mm.ForkEditHistory = otherMM.ForkEditHistory
 	}
 }
 

@@ -194,3 +194,58 @@ var cmdKeepDeleted = settingCommand("keep-deleted",
 		"attachments kept. Messages you delete yourself are still removed.",
 	func(m *waid.UserLoginMetadata) bool { return m.KeepDeletedEnabled() },
 	func(m *waid.UserLoginMetadata, v bool) { m.KeepDeleted = &v })
+
+// forkPrevContent returns the content stored for a part before an edit is merged into it.
+func forkPrevContent(part *database.Message) *event.MessageEventContent {
+	if meta, ok := part.Metadata.(*waid.MessageMetadata); ok {
+		return meta.ForkContent
+	}
+	return nil
+}
+
+// forkRenderEditHistory records the previous version of an edited part and, with show-edits on,
+// renders all previous versions under the new text. The stored ForkContent stays clean.
+func (wa *WhatsAppClient) forkRenderEditHistory(part *database.Message, editPart *bridgev2.ConvertedEditPart, prev *event.MessageEventContent) {
+	meta, ok := part.Metadata.(*waid.MessageMetadata)
+	if !ok || editPart == nil || editPart.Content == nil || prev == nil || prev.Body == editPart.Content.Body {
+		return
+	}
+	history := append([]string{prev.Body}, meta.ForkEditHistory...)
+	if len(history) > maxEditHistory {
+		history = history[:maxEditHistory]
+	}
+	meta.ForkEditHistory = history
+	if wa.loginMeta().ShowEditsEnabled() {
+		editPart.Content = withEditHistory(editPart.Content, history)
+	}
+}
+
+const maxEditHistory = 10
+
+// withEditHistory returns a copy of content with previous versions appended, newest first.
+func withEditHistory(orig *event.MessageEventContent, history []string) *event.MessageEventContent {
+	c := *orig
+	formatted := c.FormattedBody
+	if c.Format != event.FormatHTML || formatted == "" {
+		formatted = strings.ReplaceAll(html.EscapeString(c.Body), "\n", "<br/>")
+	}
+	var plain, rich strings.Builder
+	plain.WriteString(c.Body)
+	rich.WriteString(formatted)
+	for _, old := range history {
+		plain.WriteString("\n✏️ was: " + old)
+		rich.WriteString(`<br/><font color="#888888"><sub>✏️ was: ` +
+			strings.ReplaceAll(html.EscapeString(old), "\n", "<br/>") + "</sub></font>")
+	}
+	c.Body = plain.String()
+	c.Format = event.FormatHTML
+	c.FormattedBody = rich.String()
+	return &c
+}
+
+var cmdShowEdits = settingCommand("show-edits",
+	"Show previous versions under edited messages",
+	"When on, edited messages list their earlier versions underneath (\"✏️ was: …\"), newest first. "+
+		"Beeper otherwise only shows the latest version.",
+	func(m *waid.UserLoginMetadata) bool { return m.ShowEditsEnabled() },
+	func(m *waid.UserLoginMetadata, v bool) { m.ShowEdits = &v })
