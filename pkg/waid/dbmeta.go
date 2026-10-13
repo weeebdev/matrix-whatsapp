@@ -45,6 +45,14 @@ type UserLoginMetadata struct {
 	ReachoutTimelockUntil          time.Time `json:"reachout_timelock_until,omitzero"`
 
 	MData json.RawMessage `json:"mdata,omitempty"`
+
+	// Fork settings, see connector/privacy.go
+	Invisible   bool  `json:"invisible,omitempty"`
+	KeepDeleted *bool `json:"keep_deleted,omitempty"`
+}
+
+func (m *UserLoginMetadata) KeepDeletedEnabled() bool {
+	return m.KeepDeleted == nil || *m.KeepDeleted
 }
 
 type PushKeys struct {

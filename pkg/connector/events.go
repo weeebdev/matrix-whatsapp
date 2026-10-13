@@ -176,6 +176,9 @@ func (evt *WAMessageEvent) PostHandle(ctx context.Context, portal *bridgev2.Port
 }
 
 func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message) (*bridgev2.ConvertedEdit, error) {
+	if evt.revokeAsDeletedEdit() {
+		return evt.convertRevokeToDeletedEdit(ctx, portal, existing)
+	}
 	if len(existing) > 1 {
 		zerolog.Ctx(ctx).Warn().Msg("Got edit to message with multiple parts")
 	}
@@ -258,6 +261,9 @@ func (evt *WAMessageEvent) GetType() bridgev2.RemoteEventType {
 	case "edit":
 		return bridgev2.RemoteEventEdit
 	case "revoke":
+		if evt.revokeAsDeletedEdit() {
+			return bridgev2.RemoteEventEdit
+		}
 		return bridgev2.RemoteEventMessageRemove
 	case "ignore":
 		return bridgev2.RemoteEventUnknown

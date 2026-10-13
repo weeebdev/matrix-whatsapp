@@ -294,6 +294,9 @@ func (wa *WhatsAppClient) HandleMatrixMessageRemove(ctx context.Context, msg *br
 }
 
 func (wa *WhatsAppClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev2.MatrixReadReceipt) (retErr error) {
+	if wa.isInvisible() {
+		return nil
+	}
 	if !receipt.ReadUpTo.After(receipt.LastRead) {
 		return nil
 	}
@@ -343,6 +346,9 @@ func (wa *WhatsAppClient) HandleMatrixReadReceipt(ctx context.Context, receipt *
 }
 
 func (wa *WhatsAppClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.MatrixTyping) (retErr error) {
+	if wa.isInvisible() {
+		return nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return err
