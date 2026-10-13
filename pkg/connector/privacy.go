@@ -64,8 +64,9 @@ func (evt *WAMessageEvent) convertRevokeToDeletedEdit(ctx context.Context, porta
 			continue
 		}
 		var content *event.MessageEventContent
+		var history []string
 		if stored := forkOpenStored(part); stored != nil {
-			content = stored.Content
+			content, history = stored.Content, stored.EditHistory
 		} else if orig, err := evt.wa.Main.Bridge.Bot.GetEvent(ctx, portal.MXID, part.MXID); err != nil {
 			log.Debug().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't fetch original event of revoked message")
 		} else if c := orig.Content.AsMessage(); c != nil && c.MsgType != "" {
@@ -80,7 +81,7 @@ func (evt *WAMessageEvent) convertRevokeToDeletedEdit(ctx context.Context, porta
 		edit.ModifiedParts = append(edit.ModifiedParts, &bridgev2.ConvertedEditPart{
 			Part:    part,
 			Type:    event.EventMessage,
-			Content: deletedContent(content),
+			Content: evt.wa.deletedWithHistory(content, history),
 		})
 		if meta != nil {
 			meta.ForkDeleted = true
@@ -111,6 +112,15 @@ func (evt *WAMessageEvent) convertRevokeToDeletedEdit(ctx context.Context, porta
 			}},
 		},
 	}, nil
+}
+
+// deletedWithHistory marks content as deleted, keeping its edit history visible (show-edits).
+func (wa *WhatsAppClient) deletedWithHistory(content *event.MessageEventContent, history []string) *event.MessageEventContent {
+	marked := deletedContent(content)
+	if wa.loginMeta().ShowEditsEnabled() && len(history) > 0 {
+		marked = withEditHistory(marked, history)
+	}
+	return marked
 }
 
 func deletedContent(orig *event.MessageEventContent) *event.MessageEventContent {
