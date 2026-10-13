@@ -211,9 +211,9 @@ func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Por
 	} else if len(cm.Parts) > 0 && cacheMessage != "" {
 		evt.wa.Main.AddMediaEditCache(portal, cacheMessage, cm.Parts[0])
 	}
-	prevContent := forkPrevContent(existing[0]) // fork: see privacy.go
+	prevStored := forkOpenStored(existing[0]) // fork: see privacy.go
 	editPart := cm.Parts[0].ToEditPart(existing[0])
-	evt.wa.forkRenderEditHistory(existing[0], editPart, prevContent)
+	evt.wa.forkRenderEditHistory(existing[0], editPart, prevStored)
 	if evt.isUndecryptableUpsertSubEvent || evt.dontRenderEdited {
 		if editPart.TopLevelExtra == nil {
 			editPart.TopLevelExtra = make(map[string]any)

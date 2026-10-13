@@ -8,15 +8,21 @@ New bot commands (send them to the bridge bot):
   Unlike WhatsApp's own read-receipt privacy setting, you still see other people's read receipts.
 - `keep-deleted on|off` (default on): when someone deletes a message for everyone, keep it in Matrix,
   struck through and marked "🗑 deleted on WhatsApp", with attachments kept. Your own deletes still
-  remove the message. The bridged content is stored in message metadata (`fork_content`), because
-  Beeper-style configs (`ratchet_on_decrypt`) make old Matrix events undecryptable. Messages bridged
-  before that field existed get a "🗑 This message was deleted" reply instead.
+  remove the message. Messages without stored content get a "🗑 This message was deleted" reply.
 
 - `show-edits on|off` (default on): edited messages list their previous versions underneath
   ("✏️ was: …", newest first, up to 10). Beeper otherwise only shows the latest version.
 
+Stored content: keep-deleted and show-edits need other people's message content kept in the bridge
+database (Beeper-style `ratchet_on_decrypt` configs make old Matrix events undecryptable, so it
+can't be re-read). It's sealed with AES-256-GCM (`waid/forkseal.go`) using a key from the
+`CONTENT_ENCRYPTION_KEY` environment variable (`openssl rand -base64 32`), bound to the WhatsApp
+message ID, so database snapshots and backups only hold ciphertext. Your own messages aren't stored.
+Without the key nothing is stored. A malformed key stops the bridge at startup. Don't rotate the key.
+
 The code lives in `pkg/connector/privacy.go`, plus a few one-line hooks in `events.go`,
-`handlematrix.go`, `connector.go`, `waid/dbmeta.go` and `msgconv/from-whatsapp.go`.
+`handlematrix.go`, `connector.go`, `waid/dbmeta.go` and `msgconv/from-whatsapp.go`, plus
+`waid/forkseal.go`.
 
 Images: `ghcr.io/weeebdev/matrix-whatsapp`, tagged `<upstream release>-weeebdev.N` (e.g.
 `v0.2609.0-weeebdev.1`) and `latest`. The Go module path and the binary path

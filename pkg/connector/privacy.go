@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"os"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -18,6 +19,17 @@ import (
 
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
+
+// forkCheckContentKey validates CONTENT_ENCRYPTION_KEY at startup. A malformed key is fatal, so
+// content is never silently stored unencrypted or lost; a missing key only disables storage.
+func forkCheckContentKey(bridge *bridgev2.Bridge) {
+	if enabled, err := waid.ForkLoadKey(); err != nil {
+		bridge.Log.WithLevel(zerolog.FatalLevel).Err(err).Msg("Invalid content encryption key")
+		os.Exit(15)
+	} else if !enabled {
+		bridge.Log.Warn().Msg(waid.ForkContentKeyEnv + " not set: message content won't be stored, so keep-deleted and show-edits are degraded")
+	}
+}
 
 func (wa *WhatsAppClient) loginMeta() *waid.UserLoginMetadata {
 	return wa.UserLogin.Metadata.(*waid.UserLoginMetadata)
@@ -52,8 +64,8 @@ func (evt *WAMessageEvent) convertRevokeToDeletedEdit(ctx context.Context, porta
 			continue
 		}
 		var content *event.MessageEventContent
-		if meta != nil && meta.ForkContent != nil {
-			content = meta.ForkContent
+		if stored := forkOpenStored(part); stored != nil {
+			content = stored.Content
 		} else if orig, err := evt.wa.Main.Bridge.Bot.GetEvent(ctx, portal.MXID, part.MXID); err != nil {
 			log.Debug().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't fetch original event of revoked message")
 		} else if c := orig.Content.AsMessage(); c != nil && c.MsgType != "" {
@@ -195,27 +207,41 @@ var cmdKeepDeleted = settingCommand("keep-deleted",
 	func(m *waid.UserLoginMetadata) bool { return m.KeepDeletedEnabled() },
 	func(m *waid.UserLoginMetadata, v bool) { m.KeepDeleted = &v })
 
-// forkPrevContent returns the content stored for a part before an edit is merged into it.
-func forkPrevContent(part *database.Message) *event.MessageEventContent {
-	if meta, ok := part.Metadata.(*waid.MessageMetadata); ok {
-		return meta.ForkContent
+// forkOpenStored decrypts the stored content of a bridged message part, or returns nil.
+func forkOpenStored(part *database.Message) *waid.ForkStored {
+	meta, ok := part.Metadata.(*waid.MessageMetadata)
+	if !ok || meta.ForkSealed == "" {
+		return nil
 	}
-	return nil
+	stored, err := waid.ForkOpen(waid.ForkWAMessageID(part.ID), meta.ForkSealed)
+	if err != nil {
+		return nil
+	}
+	return stored
 }
 
-// forkRenderEditHistory records the previous version of an edited part and, with show-edits on,
-// renders all previous versions under the new text. The stored ForkContent stays clean.
-func (wa *WhatsAppClient) forkRenderEditHistory(part *database.Message, editPart *bridgev2.ConvertedEditPart, prev *event.MessageEventContent) {
+// forkRenderEditHistory re-seals the edited part's content under the original message ID with the
+// previous version prepended to its history, and with show-edits on, renders previous versions
+// under the new text. Parts without stored content (own messages, or no key) store nothing.
+func (wa *WhatsAppClient) forkRenderEditHistory(part *database.Message, editPart *bridgev2.ConvertedEditPart, prev *waid.ForkStored) {
 	meta, ok := part.Metadata.(*waid.MessageMetadata)
-	if !ok || editPart == nil || editPart.Content == nil || prev == nil || prev.Body == editPart.Content.Body {
+	if !ok {
 		return
 	}
-	history := append([]string{prev.Body}, meta.ForkEditHistory...)
-	if len(history) > maxEditHistory {
-		history = history[:maxEditHistory]
+	if prev == nil || editPart == nil || editPart.Content == nil {
+		// CopyFrom may have copied a blob sealed under the edit's own ID; it's useless, drop it.
+		meta.ForkSealed = ""
+		return
 	}
-	meta.ForkEditHistory = history
-	if wa.loginMeta().ShowEditsEnabled() {
+	history := prev.EditHistory
+	if prev.Content != nil && prev.Content.Body != editPart.Content.Body {
+		history = append([]string{prev.Content.Body}, prev.EditHistory...)
+		if len(history) > maxEditHistory {
+			history = history[:maxEditHistory]
+		}
+	}
+	meta.ForkSealed = waid.ForkSeal(waid.ForkWAMessageID(part.ID), &waid.ForkStored{Content: editPart.Content, EditHistory: history})
+	if wa.loginMeta().ShowEditsEnabled() && len(history) > 0 {
 		editPart.Content = withEditHistory(editPart.Content, history)
 	}
 }
