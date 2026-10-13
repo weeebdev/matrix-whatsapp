@@ -1,0 +1,73 @@
+# Fork-only: follow upstream mautrix/whatsapp releases. When upstream tags a new release, rebase the
+# fork's patch commits onto it, run the tests, push the branch and a <release>-weeebdev.1 tag, then
+# build the image (the tag push triggers fork-release.yml). A conflict or test failure fails the run,
+# so nothing broken gets published.
+#
+# Requires the SYNC_TOKEN secret: a fine-grained token for this repo with Contents and Workflows
+# write. GITHUB_TOKEN can't push commits that touch .github/workflows, and its pushes don't trigger
+# other workflows.
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: sync-upstream
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.rebase.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: privacy
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Find latest upstream release
+        id: latest
+        run: |
+          git remote add upstream https://github.com/mautrix/whatsapp.git
+          git fetch --quiet upstream main --tags
+          latest=$(git tag -l 'v0.*' --sort=-v:refname | grep -vE -- '-' | head -n1)
+          echo "release=$latest" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$latest-weeebdev.1" >/dev/null; then
+            echo "Fork is already on $latest"
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase fork patches
+        id: rebase
+        if: steps.latest.outputs.uptodate != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          release=${{ steps.latest.outputs.release }}
+          oldbase=$(git merge-base HEAD upstream/main)
+          echo "Rebasing $(git rev-list --count "$oldbase"..HEAD) fork commit(s) onto $release"
+          git rebase --onto "$release" "$oldbase"
+          echo "tag=$release-weeebdev.1" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        if: steps.rebase.outputs.tag != ''
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        if: steps.rebase.outputs.tag != ''
+        run: go test -tags goolm ./...
+
+      - name: Push branch and tag
+        if: steps.rebase.outputs.tag != ''
+        run: |
+          tag=${{ steps.rebase.outputs.tag }}
+          git tag "$tag"
+          git push --force-with-lease origin HEAD:privacy
+          git push origin "$tag"
+
