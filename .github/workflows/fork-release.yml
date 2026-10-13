@@ -1,4 +1,5 @@
-# Fork-only: builds ghcr.io/<owner>/mautrix-whatsapp from the upstream Dockerfile.
+# Fork-only: builds ghcr.io/<owner>/matrix-whatsapp from the upstream Dockerfile.
+# Each architecture builds on a native runner; a final job merges them into one multi-arch tag.
 name: fork-release
 
 on:
@@ -6,43 +7,94 @@ on:
     tags:
       - "v*-weeebdev*"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git tag to (re)build, e.g. v0.2609.0-weeebdev.1
+        required: true
+        type: string
   workflow_call:
     inputs:
       ref:
-        description: Git tag to build (e.g. v0.2610.0-weeebdev.1)
+        description: Git tag to build
         required: true
         type: string
 
+env:
+  REF: ${{ inputs.ref || github.ref_name }}
+
 jobs:
-  image:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
-      - uses: docker/setup-qemu-action@v3
+          ref: ${{ env.REF }}
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ inputs.ref }},enable=${{ inputs.ref != '' }}
-            type=ref,event=tag
-            type=sha
-            type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.runner }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch tags
+        working-directory: /tmp/digests
+        run: |
+          img=${{ steps.image.outputs.name }}
+          sha=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" "refs/tags/${REF}^{}" "refs/tags/${REF}" | head -n1 | cut -c1-7)
+          sources=()
+          for digest in *; do sources+=("$img@sha256:$digest"); done
+          docker buildx imagetools create \
+            -t "$img:$REF" -t "$img:sha-$sha" -t "$img:latest" \
+            "${sources[@]}"
+          docker buildx imagetools inspect "$img:$REF"
