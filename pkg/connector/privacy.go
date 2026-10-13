@@ -9,9 +9,11 @@ import (
 	"html"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
@@ -37,32 +39,66 @@ func (evt *WAMessageEvent) revokeAsDeletedEdit() bool {
 
 const deletedLabel = "🗑 deleted on WhatsApp"
 
-// convertRevokeToDeletedEdit re-renders the existing Matrix events of a revoked message as
-// struck-through text, or keeps media with a marked caption.
+// convertRevokeToDeletedEdit marks a revoked message as deleted in place: text is struck through,
+// media keeps its file with a marked caption. Content comes from message metadata (stored when the
+// message was bridged); re-reading the Matrix event is only a fallback, because Beeper configs
+// (ratchet_on_decrypt) make old events undecryptable. If neither works, a reply notice is added.
 func (evt *WAMessageEvent) convertRevokeToDeletedEdit(ctx context.Context, portal *bridgev2.Portal, existing []*database.Message) (*bridgev2.ConvertedEdit, error) {
+	log := zerolog.Ctx(ctx)
 	edit := &bridgev2.ConvertedEdit{}
 	for _, part := range existing {
-		orig, err := evt.wa.Main.Bridge.Bot.GetEvent(ctx, portal.MXID, part.MXID)
-		if err != nil || orig == nil {
+		meta, _ := part.Metadata.(*waid.MessageMetadata)
+		if meta != nil && meta.ForkDeleted {
 			continue
 		}
-		content := orig.Content.AsMessage()
-		if content == nil || content.MsgType == "" || strings.Contains(content.Body, deletedLabel) {
-			continue
+		var content *event.MessageEventContent
+		if meta != nil && meta.ForkContent != nil {
+			content = meta.ForkContent
+		} else if orig, err := evt.wa.Main.Bridge.Bot.GetEvent(ctx, portal.MXID, part.MXID); err != nil {
+			log.Debug().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't fetch original event of revoked message")
+		} else if c := orig.Content.AsMessage(); c != nil && c.MsgType != "" {
+			content = c
+			if c.NewContent != nil {
+				content = c.NewContent
+			}
 		}
-		if content.NewContent != nil {
-			content = content.NewContent
+		if content == nil {
+			continue
 		}
 		edit.ModifiedParts = append(edit.ModifiedParts, &bridgev2.ConvertedEditPart{
 			Part:    part,
 			Type:    event.EventMessage,
 			Content: deletedContent(content),
 		})
+		if meta != nil {
+			meta.ForkDeleted = true
+		}
 	}
-	if len(edit.ModifiedParts) == 0 {
-		return nil, fmt.Errorf("%w: nothing to mark as deleted", bridgev2.ErrIgnoringRemoteEvent)
+	if len(existing) == 0 {
+		return nil, fmt.Errorf("%w: no parts", bridgev2.ErrIgnoringRemoteEvent)
 	}
-	return edit, nil
+	if len(edit.ModifiedParts) > 0 {
+		log.Info().Int("parts", len(edit.ModifiedParts)).Msg("keep-deleted: marked revoked message as deleted")
+		return edit, nil
+	}
+	if meta, _ := existing[0].Metadata.(*waid.MessageMetadata); meta != nil && meta.ForkDeleted {
+		return nil, fmt.Errorf("%w: already marked as deleted", bridgev2.ErrIgnoringRemoteEvent)
+	}
+	log.Info().Msg("keep-deleted: original content unavailable, adding a reply notice")
+	if meta, _ := existing[0].Metadata.(*waid.MessageMetadata); meta != nil {
+		meta.ForkDeleted = true
+	}
+	return &bridgev2.ConvertedEdit{
+		ModifiedParts: []*bridgev2.ConvertedEditPart{},
+		AddedParts: &bridgev2.ConvertedMessage{
+			ReplyTo: &networkid.MessageOptionalPartID{MessageID: existing[0].ID, PartID: &existing[0].PartID},
+			Parts: []*bridgev2.ConvertedMessagePart{{
+				ID:      "fork-deleted",
+				Type:    event.EventMessage,
+				Content: &event.MessageEventContent{MsgType: event.MsgNotice, Body: "🗑 This message was deleted on WhatsApp"},
+			}},
+		},
+	}, nil
 }
 
 func deletedContent(orig *event.MessageEventContent) *event.MessageEventContent {

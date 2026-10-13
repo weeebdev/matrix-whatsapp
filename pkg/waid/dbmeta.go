@@ -27,6 +27,7 @@ import (
 	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
+	"maunium.net/go/mautrix/event"
 )
 
 type UserLoginMetadata struct {
@@ -104,6 +105,12 @@ type MessageMetadata struct {
 	DirectMediaMeta  json.RawMessage   `json:"direct_media_meta,omitempty"`
 	IsMatrixPoll     bool              `json:"is_matrix_poll,omitzero"`
 	Edits            []types.MessageID `json:"edits,omitempty"`
+
+	// Fork (connector/privacy.go): bridged content kept so a revoke can mark the message as
+	// deleted without re-reading the Matrix event (which encrypted rooms with ratchet_on_decrypt
+	// can't do).
+	ForkContent *event.MessageEventContent `json:"fork_content,omitempty"`
+	ForkDeleted bool                       `json:"fork_deleted,omitempty"`
 }
 
 func (mm *MessageMetadata) CopyFrom(other any) {
@@ -123,6 +130,9 @@ func (mm *MessageMetadata) CopyFrom(other any) {
 		mm.GroupInvite = otherMM.GroupInvite
 	}
 	mm.IsMatrixPoll = mm.IsMatrixPoll || otherMM.IsMatrixPoll
+	if otherMM.ForkContent != nil {
+		mm.ForkContent = otherMM.ForkContent
+	}
 }
 
 type ReactionMetadata struct {

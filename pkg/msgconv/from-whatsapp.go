@@ -237,6 +237,7 @@ func (mc *MessageConverter) ToMatrix(
 	}
 	dbMeta := part.DBMetadata.(*waid.MessageMetadata)
 	dbMeta.SenderDeviceID = info.Sender.Device
+	dbMeta.ForkContent = part.Content // fork: see connector/privacy.go
 	if info.IsIncomingBroadcast() {
 		dbMeta.BroadcastListJID = &info.Chat
 		if part.Extra == nil {

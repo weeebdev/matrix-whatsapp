@@ -34,3 +34,15 @@ func TestSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestForkContentFollowsEdits(t *testing.T) {
+	orig := &waid.MessageMetadata{ForkContent: &event.MessageEventContent{MsgType: event.MsgText, Body: "v1"}}
+	orig.CopyFrom(&waid.MessageMetadata{ForkContent: &event.MessageEventContent{MsgType: event.MsgText, Body: "v2"}})
+	if orig.ForkContent.Body != "v2" {
+		t.Errorf("edit should replace stored content, got %q", orig.ForkContent.Body)
+	}
+	orig.CopyFrom(&waid.MessageMetadata{})
+	if orig.ForkContent == nil || orig.ForkContent.Body != "v2" {
+		t.Error("metadata without content must not clear stored content")
+	}
+}
