@@ -382,6 +382,9 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 		parsedMessageType: parsedMessageType,
 		dontRenderEdited:  dontRenderEdited,
 	})
+	if res.Success { // fork: see forkextras.go
+		wa.forkHandleLinks(evt, evt.Message)
+	}
 	return res.Success
 }
 

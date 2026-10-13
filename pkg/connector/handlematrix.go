@@ -141,6 +141,9 @@ func (wa *WhatsAppClient) handleConvertedMatrixMessage(ctx context.Context, msg 
 }
 
 func (wa *WhatsAppClient) PreHandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
+	if resp, ok := wa.forkPreHandleReaction(msg); ok { // fork: see forkextras.go
+		return resp, nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return bridgev2.MatrixReactionPreResponse{}, fmt.Errorf("failed to parse portal ID: %w", err)
@@ -160,6 +163,9 @@ func (wa *WhatsAppClient) PreHandleMatrixReaction(ctx context.Context, msg *brid
 }
 
 func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (result *database.Reaction, retErr error) {
+	if res, ok := wa.forkHandleReaction(ctx, msg); ok { // fork: see forkextras.go
+		return res, nil
+	}
 	messageID, err := waid.ParseMessageID(msg.TargetMessage.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse target message ID: %w", err)
@@ -199,6 +205,9 @@ func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev
 }
 
 func (wa *WhatsAppClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) (retErr error) {
+	if msg.TargetReaction.EmojiID == forkTranscribeEmojiID { // fork: never sent to WhatsApp
+		return nil
+	}
 	messageID, err := waid.ParseMessageID(msg.TargetReaction.MessageID)
 	if err != nil {
 		return fmt.Errorf("failed to parse target message ID: %w", err)

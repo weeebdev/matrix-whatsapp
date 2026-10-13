@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"strings"
 	"testing"
 
 	"maunium.net/go/mautrix/event"
@@ -43,5 +44,16 @@ func TestWithEditHistory(t *testing.T) {
 	want := `v3<br/><font color="#888888"><sub>✏️ was: v2</sub></font><br/><font color="#888888"><sub>✏️ was: a&lt;b</sub></font>`
 	if c.FormattedBody != want {
 		t.Errorf("html %q", c.FormattedBody)
+	}
+}
+
+func TestTikTokLinks(t *testing.T) {
+	text := "look https://vm.tiktok.com/ZMabc123/ and https://www.tiktok.com/@user/video/7412345678901234567?is_from_webapp=1 but not https://example.com/tiktok.com"
+	got := tiktokLinkRegex.FindAllString(text, forkTikTokMaxLinks)
+	if len(got) != 2 || got[0] != "https://vm.tiktok.com/ZMabc123/" || !strings.HasPrefix(got[1], "https://www.tiktok.com/@user/video/") {
+		t.Errorf("links %q", got)
+	}
+	if !isForkTranscribeReaction("📝") || isForkTranscribeReaction("👍") {
+		t.Error("transcribe reaction detection")
 	}
 }

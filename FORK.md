@@ -13,6 +13,15 @@ New bot commands (send them to the bridge bot):
 - `show-edits on|off` (default on): edited messages list their previous versions underneath
   ("✏️ was: …", newest first, up to 10). Beeper otherwise only shows the latest version.
 
+- **Transcribe voice messages on demand:** react with 📝 on a received voice message. The reaction
+  isn't sent to WhatsApp; the bridge replies with "📝 <text>". Uses any OpenAI-compatible
+  `/audio/transcriptions` API: env `TRANSCRIBE_API_URL` (base URL ending in `/v1`),
+  `TRANSCRIBE_API_KEY`, `TRANSCRIBE_MODEL`, optional `TRANSCRIBE_LANGUAGE`. Needs the stored content,
+  so it works for voice messages from others received after this was enabled.
+- **TikTok links:** a TikTok link in any received message (or one you send from your phone) is
+  downloaded with yt-dlp (bundled in the image) and posted as a video reply. Up to 3 links per
+  message, 100 MB max. Failures leave the link as is.
+
 Stored content: keep-deleted and show-edits need other people's message content kept in the bridge
 database (Beeper-style `ratchet_on_decrypt` configs make old Matrix events undecryptable, so it
 can't be re-read). It's sealed with AES-256-GCM (`waid/forkseal.go`) using a key from the
