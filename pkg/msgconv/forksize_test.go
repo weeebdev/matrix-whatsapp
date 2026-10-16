@@ -6,7 +6,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 func TestForkCapContent(t *testing.T) {
@@ -41,5 +44,54 @@ func TestForkCapContent(t *testing.T) {
 	}
 	if forkContentSize(c2, extra) > ForkMaxContentBytes {
 		t.Fatal("still too big")
+	}
+}
+
+type stubIntent struct {
+	bridgev2.MatrixAPI
+	uploaded []byte
+}
+
+func (s *stubIntent) UploadMedia(ctx context.Context, roomID id.RoomID, data []byte, fileName, mimeType string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+	s.uploaded = data
+	return "mxc://test/fulltext", nil, nil
+}
+
+func TestForkCapConvertedAttachesFullText(t *testing.T) {
+	long := strings.Repeat("строка текста\n", 6000)
+	newCM := func() *bridgev2.ConvertedMessage {
+		return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
+			Type:    event.EventMessage,
+			Content: &event.MessageEventContent{MsgType: event.MsgText, Body: long},
+		}}}
+	}
+
+	// No intent in context (e.g. tests, unusual paths): plain truncation, no attachment.
+	cm := newCM()
+	forkCapConverted(context.Background(), cm)
+	if len(cm.Parts) != 1 || !strings.HasSuffix(cm.Parts[0].Content.Body, forkTruncatedMarker) {
+		t.Fatalf("expected plain truncation, got %d parts", len(cm.Parts))
+	}
+
+	// With an intent: full text attached as message.txt, note in the truncated body.
+	stub := &stubIntent{}
+	ctx := context.WithValue(context.Background(), contextKeyIntent, bridgev2.MatrixAPI(stub))
+	ctx = context.WithValue(ctx, contextKeyPortal, &bridgev2.Portal{Portal: &database.Portal{MXID: "!room:test"}})
+	cm = newCM()
+	forkCapConverted(ctx, cm)
+	if len(cm.Parts) != 2 {
+		t.Fatalf("expected text + attachment, got %d parts", len(cm.Parts))
+	}
+	if !strings.HasSuffix(cm.Parts[0].Content.Body, forkFullTextNote) {
+		t.Errorf("truncated body should point to the attachment")
+	}
+	if att := cm.Parts[1]; att.Content.MsgType != event.MsgFile || att.Content.FileName != "message.txt" || att.Content.URL != "mxc://test/fulltext" {
+		t.Errorf("bad attachment: %+v", att.Content)
+	}
+	if string(stub.uploaded) != long {
+		t.Errorf("attachment must hold the complete original text (%d of %d bytes)", len(stub.uploaded), len(long))
+	}
+	if forkContentSize(cm.Parts[0].Content, cm.Parts[0].Extra) > ForkMaxContentBytes {
+		t.Error("text part still too big")
 	}
 }

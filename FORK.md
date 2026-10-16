@@ -26,9 +26,10 @@ New bot commands (send them to the bridge bot):
 
 - **Oversized events:** Matrix rejects events over 64 KiB, and one such event fails a whole backfill
   batch, every retry. Converted messages are capped at 40 KB of content (about 54 KB once
-  encrypted), and edits at half that: formatting is dropped first, then the text is truncated
-  with "… (message truncated: too long to bridge)", then optional extras such as link previews are
-  dropped. Each shrink logs a warning (`msgconv/forksize.go`).
+  encrypted), and edits at half that: formatting is dropped first, then the text is truncated,
+  then optional extras such as link previews are dropped. When the text itself is truncated, the
+  complete text is attached to the same message as `message.txt` (like Telegram). Each shrink logs
+  a warning (`msgconv/forksize.go`).
 
 Stored content: keep-deleted and show-edits need other people's message content kept in the bridge
 database (Beeper-style `ratchet_on_decrypt` configs make old Matrix events undecryptable, so it
