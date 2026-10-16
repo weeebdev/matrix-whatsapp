@@ -323,5 +323,6 @@ func (mc *MessageConverter) ToMatrix(
 		cm.ThreadRoot = ptr.Ptr(waid.MakeMessageID(chat, pcp, commentTarget.GetID()))
 	}
 
+	forkCapConverted(ctx, cm) // fork: see forksize.go
 	return cm
 }

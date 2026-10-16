@@ -17,6 +17,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
+	"go.mau.fi/mautrix-whatsapp/pkg/msgconv"
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
@@ -120,6 +121,7 @@ func (wa *WhatsAppClient) deletedWithHistory(content *event.MessageEventContent,
 	if wa.loginMeta().ShowEditsEnabled() && len(history) > 0 {
 		marked = withEditHistory(marked, history)
 	}
+	msgconv.ForkCapContent(context.Background(), marked, nil, msgconv.ForkMaxContentBytes/2)
 	return marked
 }
 
@@ -254,6 +256,7 @@ func (wa *WhatsAppClient) forkRenderEditHistory(part *database.Message, editPart
 	if wa.loginMeta().ShowEditsEnabled() && len(history) > 0 {
 		editPart.Content = withEditHistory(editPart.Content, history)
 	}
+	msgconv.ForkCapContent(context.Background(), editPart.Content, editPart.Extra, msgconv.ForkMaxContentBytes/2)
 }
 
 const maxEditHistory = 10
